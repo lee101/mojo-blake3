@@ -81,14 +81,20 @@ class blake3:
             self._key = _IV_BYTES
             self._flags = 0
 
-        self._data = bytearray()
+        self._data: bytes | bytearray = b""
         self._max_threads = max_threads
         self._usedforsecurity = usedforsecurity
         if data is not None:
             self.update(data)
 
     def update(self, data: Any) -> "blake3":
-        self._data.extend(_byteslike(data))
+        view = _byteslike(data)
+        if not self._data and isinstance(data, bytes):
+            self._data = data
+            return self
+        if isinstance(self._data, bytes):
+            self._data = bytearray(self._data)
+        self._data.extend(view)
         return self
 
     def update_mmap(
@@ -98,7 +104,7 @@ class blake3:
             if os.fstat(file.fileno()).st_size == 0:
                 return self
             with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mapping:
-                self._data.extend(mapping)
+                self.update(mapping)
         return self
 
     @staticmethod
@@ -131,10 +137,13 @@ class blake3:
         duplicate = object.__new__(type(self))
         duplicate._key = self._key
         duplicate._flags = self._flags
-        duplicate._data = self._data.copy()
+        if isinstance(self._data, bytes):
+            duplicate._data = self._data
+        else:
+            duplicate._data = self._data.copy()
         duplicate._max_threads = self._max_threads
         duplicate._usedforsecurity = self._usedforsecurity
         return duplicate
 
     def reset(self) -> None:
-        self._data.clear()
+        self._data = b""

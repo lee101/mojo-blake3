@@ -17,9 +17,7 @@ comptime PARALLEL_THRESHOLD = 4 * 1024 * 1024
 
 
 @always_inline
-def sync_parallelize[FuncType: def(Int) -> None](
-    func: FuncType, count: Int
-):
+def sync_parallelize[FuncType: def(Int) -> None](func: FuncType, count: Int):
     @__parameter
     @always_inline
     def wrapped(i: Int):
@@ -76,16 +74,18 @@ def iv(i: Int) -> UInt32:
 
 
 @always_inline
-def rotr32x[W: Int](
-    value: SIMD[DType.uint32, W], amount: Int
-) -> SIMD[DType.uint32, W]:
+def rotr32x[
+    W: Int
+](value: SIMD[DType.uint32, W], amount: Int) -> SIMD[DType.uint32, W]:
     var right = SIMD[DType.uint32, W](UInt32(amount))
     var left = SIMD[DType.uint32, W](UInt32(32 - amount))
     return (value >> right) | (value << left)
 
 
 @always_inline
-def mix4[W: Int](
+def mix4[
+    W: Int
+](
     mut a: SIMD[DType.uint32, W],
     mut b: SIMD[DType.uint32, W],
     mut c: SIMD[DType.uint32, W],
@@ -104,13 +104,15 @@ def mix4[W: Int](
 
 
 @always_inline
-def message4[i0: Int, i1: Int, i2: Int, i3: Int](
+def message4[
+    i0: Int, i1: Int, i2: Int, i3: Int
+](
     block: Array[UInt32, 16],
-) -> SIMD[DType.uint32, simd_width_of[DType.float64]()] :
+) -> SIMD[
+    DType.uint32, simd_width_of[DType.float64]()
+]:
     comptime W = simd_width_of[DType.float64]()
-    return SIMD[DType.uint32, W](
-        block[i0], block[i1], block[i2], block[i3]
-    )
+    return SIMD[DType.uint32, W](block[i0], block[i1], block[i2], block[i3])
 
 
 @always_inline
@@ -162,6 +164,7 @@ def round4[
     d = d.shuffle[1, 2, 3, 0]()
 
 
+@always_inline
 def compress(
     cv: Array[UInt32, 8],
     block: Array[UInt32, 16],
@@ -174,9 +177,7 @@ def compress(
     var cv_pointer = cv.unsafe_ptr()
     var a = cv_pointer.load[width=W](0)
     var b = cv_pointer.load[width=W](W)
-    var c = SIMD[DType.uint32, W](
-        iv(0), iv(1), iv(2), iv(3)
-    )
+    var c = SIMD[DType.uint32, W](iv(0), iv(1), iv(2), iv(3))
     var d = SIMD[DType.uint32, W](
         UInt32(counter),
         UInt32(counter >> 32),
@@ -213,6 +214,199 @@ def compress(
     result_pointer.store(3 * W, d ^ cv_pointer.load[width=W](W))
 
 
+@always_inline
+def message8[
+    i0: Int, i1: Int, i2: Int, i3: Int
+](
+    first: Array[UInt32, 16],
+    second: Array[UInt32, 16],
+) -> SIMD[
+    DType.uint32, 2 * simd_width_of[DType.float64]()
+]:
+    comptime W = simd_width_of[DType.float64]()
+    return SIMD[DType.uint32, 2 * W](
+        first[i0],
+        first[i1],
+        first[i2],
+        first[i3],
+        second[i0],
+        second[i1],
+        second[i2],
+        second[i3],
+    )
+
+
+@always_inline
+def round8[
+    i0: Int,
+    i1: Int,
+    i2: Int,
+    i3: Int,
+    i4: Int,
+    i5: Int,
+    i6: Int,
+    i7: Int,
+    i8: Int,
+    i9: Int,
+    i10: Int,
+    i11: Int,
+    i12: Int,
+    i13: Int,
+    i14: Int,
+    i15: Int,
+](
+    mut a: SIMD[DType.uint32, 2 * simd_width_of[DType.float64]()],
+    mut b: SIMD[DType.uint32, 2 * simd_width_of[DType.float64]()],
+    mut c: SIMD[DType.uint32, 2 * simd_width_of[DType.float64]()],
+    mut d: SIMD[DType.uint32, 2 * simd_width_of[DType.float64]()],
+    first: Array[UInt32, 16],
+    second: Array[UInt32, 16],
+):
+    mix4(
+        a,
+        b,
+        c,
+        d,
+        message8[i0, i2, i4, i6](first, second),
+        message8[i1, i3, i5, i7](first, second),
+    )
+    b = b.shuffle[1, 2, 3, 0, 5, 6, 7, 4]()
+    c = c.shuffle[2, 3, 0, 1, 6, 7, 4, 5]()
+    d = d.shuffle[3, 0, 1, 2, 7, 4, 5, 6]()
+    mix4(
+        a,
+        b,
+        c,
+        d,
+        message8[i8, i10, i12, i14](first, second),
+        message8[i9, i11, i13, i15](first, second),
+    )
+    b = b.shuffle[3, 0, 1, 2, 7, 4, 5, 6]()
+    c = c.shuffle[2, 3, 0, 1, 6, 7, 4, 5]()
+    d = d.shuffle[1, 2, 3, 0, 5, 6, 7, 4]()
+
+
+@always_inline
+def compress2(
+    first_cv: Array[UInt32, 8],
+    first_block: Array[UInt32, 16],
+    first_counter: UInt64,
+    second_cv: Array[UInt32, 8],
+    second_block: Array[UInt32, 16],
+    second_counter: UInt64,
+    block_len: Int,
+    flags: UInt32,
+    mut first_result: Array[UInt32, 16],
+    mut second_result: Array[UInt32, 16],
+):
+    comptime W = simd_width_of[DType.float64]()
+    var a = SIMD[DType.uint32, 2 * W](
+        first_cv[0],
+        first_cv[1],
+        first_cv[2],
+        first_cv[3],
+        second_cv[0],
+        second_cv[1],
+        second_cv[2],
+        second_cv[3],
+    )
+    var b = SIMD[DType.uint32, 2 * W](
+        first_cv[4],
+        first_cv[5],
+        first_cv[6],
+        first_cv[7],
+        second_cv[4],
+        second_cv[5],
+        second_cv[6],
+        second_cv[7],
+    )
+    var c = SIMD[DType.uint32, 2 * W](
+        iv(0),
+        iv(1),
+        iv(2),
+        iv(3),
+        iv(0),
+        iv(1),
+        iv(2),
+        iv(3),
+    )
+    var d = SIMD[DType.uint32, 2 * W](
+        UInt32(first_counter),
+        UInt32(first_counter >> 32),
+        UInt32(block_len),
+        flags,
+        UInt32(second_counter),
+        UInt32(second_counter >> 32),
+        UInt32(block_len),
+        flags,
+    )
+    var input_a = a
+    var input_b = b
+
+    round8[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15](
+        a, b, c, d, first_block, second_block
+    )
+    round8[2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8](
+        a, b, c, d, first_block, second_block
+    )
+    round8[3, 4, 10, 12, 13, 2, 7, 14, 6, 5, 9, 0, 11, 15, 8, 1](
+        a, b, c, d, first_block, second_block
+    )
+    round8[10, 7, 12, 9, 14, 3, 13, 15, 4, 0, 11, 2, 5, 8, 1, 6](
+        a, b, c, d, first_block, second_block
+    )
+    round8[12, 13, 9, 11, 15, 10, 14, 8, 7, 2, 5, 3, 0, 1, 6, 4](
+        a, b, c, d, first_block, second_block
+    )
+    round8[9, 14, 11, 5, 8, 12, 15, 1, 13, 3, 0, 10, 2, 6, 4, 7](
+        a, b, c, d, first_block, second_block
+    )
+    round8[11, 15, 5, 0, 1, 9, 8, 6, 14, 10, 2, 12, 3, 4, 7, 13](
+        a, b, c, d, first_block, second_block
+    )
+
+    var low = a ^ c
+    var high = b ^ d
+    var low_tail = c ^ input_a
+    var high_tail = d ^ input_b
+    first_result.unsafe_ptr().store(
+        0, SIMD[DType.uint32, W](low[0], low[1], low[2], low[3])
+    )
+    first_result.unsafe_ptr().store(
+        W, SIMD[DType.uint32, W](high[0], high[1], high[2], high[3])
+    )
+    first_result.unsafe_ptr().store(
+        2 * W,
+        SIMD[DType.uint32, W](
+            low_tail[0], low_tail[1], low_tail[2], low_tail[3]
+        ),
+    )
+    first_result.unsafe_ptr().store(
+        3 * W,
+        SIMD[DType.uint32, W](
+            high_tail[0], high_tail[1], high_tail[2], high_tail[3]
+        ),
+    )
+    second_result.unsafe_ptr().store(
+        0, SIMD[DType.uint32, W](low[4], low[5], low[6], low[7])
+    )
+    second_result.unsafe_ptr().store(
+        W, SIMD[DType.uint32, W](high[4], high[5], high[6], high[7])
+    )
+    second_result.unsafe_ptr().store(
+        2 * W,
+        SIMD[DType.uint32, W](
+            low_tail[4], low_tail[5], low_tail[6], low_tail[7]
+        ),
+    )
+    second_result.unsafe_ptr().store(
+        3 * W,
+        SIMD[DType.uint32, W](
+            high_tail[4], high_tail[5], high_tail[6], high_tail[7]
+        ),
+    )
+
+
 def load_block(
     data: BPtr,
     offset: Int,
@@ -221,14 +415,15 @@ def load_block(
 ):
     comptime W = simd_width_of[DType.float64]()
     var block_pointer = block.unsafe_ptr()
-    var zero = SIMD[DType.uint32, W](0)
     var i = 0
-    while i + W <= 16:
-        block_pointer.store(i, zero)
-        i += W
-    while i < 16:
-        block_pointer[i] = 0
-        i += 1
+    if size < 64:
+        var zero = SIMD[DType.uint32, W](0)
+        while i + W <= 16:
+            block_pointer.store(i, zero)
+            i += W
+        while i < 16:
+            block_pointer[i] = 0
+            i += 1
     var full_words = size // 4
     var source = (data + offset).bitcast[UInt32]()
     i = 0
@@ -243,8 +438,8 @@ def load_block(
     while byte_index < size:
         var word = byte_index // 4
         var shift = (byte_index % 4) * 8
-        block_pointer[word] |= (
-            UInt32(data[offset + byte_index]) << UInt32(shift)
+        block_pointer[word] |= UInt32(data[offset + byte_index]) << UInt32(
+            shift
         )
         byte_index += 1
 
@@ -259,15 +454,79 @@ def copy8(
     var destination_pointer = destination.unsafe_ptr()
     var i = 0
     while i + W <= 8:
-        destination_pointer.store(
-            i, source_pointer.load[width=W](i)
-        )
+        destination_pointer.store(i, source_pointer.load[width=W](i))
         i += W
     while i < 8:
         destination_pointer[i] = source_pointer[i]
         i += 1
 
 
+@always_inline
+def chunk_cv_pair(
+    data: BPtr,
+    first_chunk: Int,
+    key: Array[UInt32, 8],
+    flags: UInt32,
+    mut first_result: Array[UInt32, 8],
+    mut second_result: Array[UInt32, 8],
+):
+    var first_cv = Array[UInt32, 8](fill=0)
+    var second_cv = Array[UInt32, 8](fill=0)
+    var first_block = Array[UInt32, 16](fill=0)
+    var second_block = Array[UInt32, 16](fill=0)
+    var first_compressed = Array[UInt32, 16](fill=0)
+    var second_compressed = Array[UInt32, 16](fill=0)
+    copy8(key, first_cv)
+    copy8(key, second_cv)
+    for block_index in range(16):
+        load_block(
+            data,
+            first_chunk * 1024 + block_index * 64,
+            64,
+            first_block,
+        )
+        load_block(
+            data,
+            (first_chunk + 1) * 1024 + block_index * 64,
+            64,
+            second_block,
+        )
+        var block_flags = flags
+        if block_index == 0:
+            block_flags |= CHUNK_START
+        if block_index == 15:
+            block_flags |= CHUNK_END
+        compress2(
+            first_cv,
+            first_block,
+            UInt64(first_chunk),
+            second_cv,
+            second_block,
+            UInt64(first_chunk + 1),
+            64,
+            block_flags,
+            first_compressed,
+            second_compressed,
+        )
+        comptime W = simd_width_of[DType.float64]()
+        var i = 0
+        while i + W <= 8:
+            first_cv.unsafe_ptr().store(
+                i, first_compressed.unsafe_ptr().load[width=W](i)
+            )
+            second_cv.unsafe_ptr().store(
+                i, second_compressed.unsafe_ptr().load[width=W](i)
+            )
+            i += W
+        while i < 8:
+            first_cv[i] = first_compressed[i]
+            second_cv[i] = second_compressed[i]
+            i += 1
+    copy8(first_cv, first_result)
+    copy8(second_cv, second_result)
+
+
+@always_inline
 def chunk_output(
     data: BPtr,
     offset: Int,
@@ -304,9 +563,7 @@ def chunk_output(
         var compressed_pointer = compressed.unsafe_ptr()
         var i = 0
         while i + W <= 8:
-            cv_pointer.store(
-                i, compressed_pointer.load[width=W](i)
-            )
+            cv_pointer.store(i, compressed_pointer.load[width=W](i))
             i += W
         while i < 8:
             cv_pointer[i] = compressed_pointer[i]
@@ -363,9 +620,7 @@ def parent_cv(
     var i = 0
     while i + W <= 8:
         block_pointer.store(i, left_pointer.load[width=W](i))
-        block_pointer.store(
-            i + 8, right_pointer.load[width=W](i)
-        )
+        block_pointer.store(i + 8, right_pointer.load[width=W](i))
         i += W
     while i < 8:
         block_pointer[i] = left_pointer[i]
@@ -446,23 +701,54 @@ def hash_impl(
     var worker_count = max_workers
     if worker_count < 0 or worker_count > 16:
         worker_count = 16
-    if (
-        size >= PARALLEL_THRESHOLD
-        and chunk_count > 1
-        and worker_count > 1
-    ):
+    if size >= PARALLEL_THRESHOLD and chunk_count > 1 and worker_count > 1:
         var cvs = alloc[UInt32]((chunk_count - 1) * 8)
 
         @__parameter
-        def hash_chunk(chunk_index: Int):
+        def hash_pair(pair_index: Int):
+            var first_cv = Array[UInt32, 8](fill=0)
+            var second_cv = Array[UInt32, 8](fill=0)
+            var first_chunk = pair_index * 2
+            chunk_cv_pair(
+                data,
+                first_chunk,
+                key,
+                flags,
+                first_cv,
+                second_cv,
+            )
+            var first_pointer = first_cv.unsafe_ptr()
+            var second_pointer = second_cv.unsafe_ptr()
+            var destination_offset = first_chunk * 8
+            var i = 0
+            while i + W <= 8:
+                cvs.store(
+                    destination_offset + i,
+                    first_pointer.load[width=W](i),
+                )
+                cvs.store(
+                    destination_offset + 8 + i,
+                    second_pointer.load[width=W](i),
+                )
+                i += W
+            while i < 8:
+                cvs[destination_offset + i] = first_pointer[i]
+                cvs[destination_offset + 8 + i] = second_pointer[i]
+                i += 1
+
+        var full_chunk_count = chunk_count - 1
+        var pair_count = full_chunk_count // 2
+        parallelize[hash_pair](pair_count, min(worker_count, pair_count))
+        if full_chunk_count % 2 != 0:
+            var final_full_chunk = full_chunk_count - 1
             var local_input_cv = Array[UInt32, 8](fill=0)
             var local_block = Array[UInt32, 16](fill=0)
             var local_cv = Array[UInt32, 8](fill=0)
             var metadata = chunk_output(
                 data,
-                chunk_index * 1024,
+                final_full_chunk * 1024,
                 1024,
-                UInt64(chunk_index),
+                UInt64(final_full_chunk),
                 key,
                 flags,
                 local_input_cv,
@@ -471,13 +757,13 @@ def hash_impl(
             chaining_value(
                 local_input_cv,
                 local_block,
-                UInt64(chunk_index),
+                UInt64(final_full_chunk),
                 metadata[0],
                 metadata[1],
                 local_cv,
             )
             var local_pointer = local_cv.unsafe_ptr()
-            var destination_offset = chunk_index * 8
+            var destination_offset = final_full_chunk * 8
             var i = 0
             while i + W <= 8:
                 cvs.store(
@@ -488,17 +774,13 @@ def hash_impl(
             while i < 8:
                 cvs[destination_offset + i] = local_pointer[i]
                 i += 1
-
-        parallelize[hash_chunk](chunk_count - 1, worker_count)
         var chunk_index = 0
         while chunk_index < chunk_count - 1:
             var current_pointer = current_cv.unsafe_ptr()
             var source_offset = chunk_index * 8
             var i = 0
             while i + W <= 8:
-                current_pointer.store(
-                    i, cvs.load[width=W](source_offset + i)
-                )
+                current_pointer.store(i, cvs.load[width=W](source_offset + i))
                 i += W
             while i < 8:
                 current_pointer[i] = cvs[source_offset + i]
@@ -514,7 +796,36 @@ def hash_impl(
             chunk_index += 1
         cvs.free()
     else:
-        for chunk_index in range(chunk_count - 1):
+        var paired_cv = Array[UInt32, 8](fill=0)
+        var chunk_index = 0
+        while chunk_index + 1 < chunk_count - 1:
+            chunk_cv_pair(
+                data,
+                chunk_index,
+                key,
+                flags,
+                current_cv,
+                paired_cv,
+            )
+            stack_count = push_chunk_cv(
+                chunk_index,
+                key,
+                flags,
+                stack,
+                stack_count,
+                current_cv,
+            )
+            copy8(paired_cv, current_cv)
+            stack_count = push_chunk_cv(
+                chunk_index + 1,
+                key,
+                flags,
+                stack,
+                stack_count,
+                current_cv,
+            )
+            chunk_index += 2
+        if chunk_index < chunk_count - 1:
             var metadata = chunk_output(
                 data,
                 chunk_index * 1024,
@@ -579,9 +890,7 @@ def hash_impl(
                 i,
                 stack_pointer.load[width=W](stack_offset + i),
             )
-            block_pointer.store(
-                i + 8, current_pointer.load[width=W](i)
-            )
+            block_pointer.store(i + 8, current_pointer.load[width=W](i))
             input_pointer.store(i, key_pointer.load[width=W](i))
             i += W
         while i < 8:
@@ -597,7 +906,7 @@ def hash_impl(
     var output_block_counter = seek // 64
     var skip = Int(seek % 64)
     var written = 0
-    while written < destination_size:
+    if skip != 0 and written < destination_size:
         compress(
             input_cv,
             block,
@@ -614,7 +923,53 @@ def hash_impl(
             count=copy_size,
         )
         written += copy_size
+        output_block_counter += 1
         skip = 0
+
+    var second_output_words = Array[UInt32, 16](fill=0)
+    while written + 128 <= destination_size:
+        compress2(
+            input_cv,
+            block,
+            output_block_counter,
+            input_cv,
+            block,
+            output_block_counter + 1,
+            root_block_len,
+            root_flags | ROOT,
+            output_words,
+            second_output_words,
+        )
+        unsafe_memcpy(
+            dest=destination + written,
+            src=output_words.unsafe_ptr().bitcast[UInt8](),
+            count=64,
+        )
+        unsafe_memcpy(
+            dest=destination + written + 64,
+            src=second_output_words.unsafe_ptr().bitcast[UInt8](),
+            count=64,
+        )
+        written += 128
+        output_block_counter += 2
+
+    while written < destination_size:
+        compress(
+            input_cv,
+            block,
+            output_block_counter,
+            root_block_len,
+            root_flags | ROOT,
+            output_words,
+        )
+        var output_bytes = output_words.unsafe_ptr().bitcast[UInt8]()
+        var copy_size = min(64, destination_size - written)
+        unsafe_memcpy(
+            dest=destination + written,
+            src=output_bytes,
+            count=copy_size,
+        )
+        written += copy_size
         output_block_counter += 1
 
 

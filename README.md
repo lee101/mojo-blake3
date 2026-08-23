@@ -79,7 +79,7 @@ Expected output:
 
 ## Benchmarks
 
-Measured by running `pixi run bench` on this machine on 2026-07-29: Intel Xeon E5-2697
+Measured by running `pixi run bench` on this machine on 2026-08-23: Intel Xeon E5-2697
 v4 at 2.30 GHz, Linux 6.8.0-136-generic, Python 3.13.14. Times are the best per call from three timed batches
 and include construction of the Python hasher. Both implementations use their default
 single worker thread except for the explicitly labeled 16-thread row. The relative
@@ -87,15 +87,22 @@ column is upstream time divided by Mojo time, so a value below 1 means Mojo is s
 
 | workload | mojo-blake3 | upstream blake3 | relative | Mojo throughput |
 | --- | ---: | ---: | ---: | ---: |
-| unkeyed 64 KiB | 0.166 ms | 0.030 ms | 0.18x | 394.2 MB/s |
-| unkeyed 1 MiB | 2.275 ms | 0.464 ms | 0.20x | 460.9 MB/s |
-| unkeyed 16 MiB | 52.525 ms | 10.494 ms | 0.20x | 319.4 MB/s |
-| unkeyed 16 MiB, 16 threads | 17.971 ms | 1.640 ms | 0.09x | 933.6 MB/s |
-| keyed 16 MiB | 35.634 ms | 6.736 ms | 0.19x | 470.8 MB/s |
-| 1 MiB input + 1 MiB XOF | 5.428 ms | 2.202 ms | 0.41x | 193.2 MB/s |
+| unkeyed 64 KiB | 0.106 ms | 0.031 ms | 0.29x | 618.0 MB/s |
+| unkeyed 1 MiB | 1.171 ms | 0.373 ms | 0.32x | 895.6 MB/s |
+| unkeyed 16 MiB | 20.813 ms | 6.191 ms | 0.30x | 806.1 MB/s |
+| unkeyed 16 MiB, 16 threads | 8.252 ms | 1.358 ms | 0.16x | 2033.2 MB/s |
+| keyed 16 MiB | 20.231 ms | 6.688 ms | 0.33x | 829.3 MB/s |
+| 1 MiB input + 1 MiB XOF | 3.110 ms | 1.769 ms | 0.57x | 337.1 MB/s |
 
-These results describe this run only. The Mojo implementation was slower than upstream
-in every measured workload.
+These results describe this run only. The Mojo implementation remains slower than
+upstream in every measured workload.
+
+No GPU path is shipped. BLAKE3 compression is integer-heavy, but this package hashes a
+single contiguous message per Python call, so a device path pays host/device transfers
+on every digest. A light implementation probe also found that the pinned Mojo 1.1
+toolchain does not expose the `std.gpu` host launch API used by earlier nightlies, even
+with the matching `max` runtime installed. The probe was removed rather than retaining
+an unlaunchable or unmeasured path; CPU remains the default and only device.
 
 ## How it works
 
@@ -106,13 +113,18 @@ and all multibyte words are loaded and emitted in BLAKE3's little-endian order.
 
 The kernel splits input into 1024-byte chunks and compresses each chunk as 64-byte
 blocks. Compression maps the four independent G functions in each half-round onto SIMD
-lanes, with compile-time-unrolled message schedules. Block loading uses unaligned SIMD
-loads plus a scalar tail. For sufficiently large inputs, independent chunk chaining
-values are computed in parallel and then merged with a 54-level fixed stack according
-to the BLAKE3 binary tree rules. The final output object is retained so the root flag can
-be applied correctly, then 64-byte root output blocks are generated from the requested
-XOF seek offset. Keyed and derive-key modes use the same tree with the mode flags and
-key words specified by BLAKE3.
+lanes, with compile-time-unrolled message schedules. Full chunks are processed in
+AVX2-width pairs, with a scalar chunk remainder; XOF blocks use the same paired-counter
+strategy with scalar seek and length tails. Block loading uses unaligned SIMD loads plus
+a scalar tail and skips zeroing when all 64 bytes are overwritten. For sufficiently
+large inputs, independent chunk pairs are computed in parallel and then merged with a
+54-level fixed stack according to the BLAKE3 binary tree rules. The final output object
+is retained so the root flag can be applied correctly. Keyed and derive-key modes use
+the same tree with the mode flags and key words specified by BLAKE3.
+
+Immutable Python `bytes` inputs are retained and passed through `ctypes` without a
+constructor or FFI copy. Mutable buffers are snapshotted once to preserve upstream
+hasher semantics, and that contiguous snapshot crosses the FFI boundary zero-copy.
 
 ## Development
 

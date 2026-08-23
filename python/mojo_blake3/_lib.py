@@ -75,11 +75,17 @@ def _buffer(value: bytes | bytearray | memoryview):
     view = memoryview(value).cast("B")
     if not view:
         storage = (ctypes.c_ubyte * 1)()
+        address = ctypes.addressof(storage)
+    elif isinstance(value, bytes):
+        storage = ctypes.c_char_p(value)
+        address = ctypes.cast(storage, ctypes.c_void_p).value
     elif view.readonly:
         storage = (ctypes.c_ubyte * len(view)).from_buffer_copy(view)
+        address = ctypes.addressof(storage)
     else:
         storage = (ctypes.c_ubyte * len(view)).from_buffer(view)
-    return storage, len(view)
+        address = ctypes.addressof(storage)
+    return storage, len(view), address
 
 
 def hash_bytes(
@@ -90,8 +96,8 @@ def hash_bytes(
     seek: int,
     max_threads: int = 1,
 ) -> bytes:
-    source, size = _buffer(data)
-    key_buffer, key_size = _buffer(key)
+    source, size, source_address = _buffer(data)
+    key_buffer, key_size, key_address = _buffer(key)
     if key_size != 32:
         raise ValueError("BLAKE3 keys must be exactly 32 bytes")
     if size > sys.maxsize:
@@ -104,9 +110,9 @@ def hash_bytes(
         raise OverflowError("max_threads does not fit in the Mojo ABI")
     destination = (ctypes.c_ubyte * max(length, 1))()
     status = library().mojo_blake3_hash(
-        ctypes.addressof(source),
+        source_address,
         size,
-        ctypes.addressof(key_buffer),
+        key_address,
         flags,
         seek,
         ctypes.addressof(destination),

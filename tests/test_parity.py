@@ -78,6 +78,11 @@ def test_simd_block_load_tails_match_upstream(size):
     assert mojo_blake3.blake3(data).digest() == upstream.blake3(data).digest()
 
 
+def test_paired_chunk_simd_with_scalar_chunk_remainder():
+    data = payload(3 * 1024 + 17)
+    assert mojo_blake3.blake3(data).digest() == upstream.blake3(data).digest()
+
+
 @pytest.mark.parametrize(
     "size",
     [4 * 1024 * 1024 - 1, 4 * 1024 * 1024, 4 * 1024 * 1024 + 17],
@@ -138,6 +143,13 @@ def test_seekable_xof_matches_upstream(seek):
     ).digest(150, seek=seek)
 
 
+def test_paired_xof_blocks_with_unaligned_head_and_scalar_tail():
+    data = payload(3333)
+    assert mojo_blake3.blake3(data).digest(300, seek=17) == upstream.blake3(
+        data
+    ).digest(300, seek=17)
+
+
 def test_hexdigest_length_and_seek_match_upstream():
     data = payload(2001)
     assert mojo_blake3.blake3(data).hexdigest(
@@ -168,6 +180,22 @@ def test_numpy_buffer_input_matches_upstream_and_is_snapshotted():
     mojo = mojo_blake3.blake3(data)
     data[:] = 0
     assert mojo.digest() == expected
+
+
+def test_immutable_bytes_are_retained_without_constructor_copy():
+    data = payload(4097)
+    hasher = mojo_blake3.blake3(data)
+    assert hasher._data is data
+
+
+def test_mutable_numpy_buffer_address_crosses_ffi_without_copy():
+    from mojo_blake3._lib import _buffer
+
+    data = np.arange(4097, dtype=np.uint8)
+    storage, size, address = _buffer(data)
+    assert storage is not None
+    assert size == data.nbytes
+    assert address == data.ctypes.data
 
 
 def test_noncontiguous_buffer_is_rejected_without_crossing_ffi():
