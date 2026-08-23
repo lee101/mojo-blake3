@@ -1,18 +1,59 @@
 """BLAKE3 tree hashing, keyed hashing, key derivation, and XOF output."""
 
-from std.algorithm.functional import parallelize
 from std.memory import alloc
 from std.memory import unsafe_memcpy
+from std.runtime import initialize_runtime
+from std.runtime.asyncrt import TaskGroup
 from std.sys.info import simd_width_of
 
 
-comptime BPtr = UnsafePointer[UInt8, AnyOrigin[mut=True]]
+comptime BPtr = Pointer[UInt8, AnyOrigin[mut=True]]
 
 comptime CHUNK_START: UInt32 = 1
 comptime CHUNK_END: UInt32 = 2
 comptime PARENT: UInt32 = 4
 comptime ROOT: UInt32 = 8
 comptime PARALLEL_THRESHOLD = 4 * 1024 * 1024
+
+
+@always_inline
+def sync_parallelize[FuncType: def(Int) -> None](
+    func: FuncType, count: Int
+):
+    @__parameter
+    @always_inline
+    def wrapped(i: Int):
+        func(i)
+
+    @always_inline
+    @__parameter
+    async def task_fn(i: Int):
+        wrapped(i)
+
+    var tasks = TaskGroup()
+    for i in range(count):
+        tasks.create_task(task_fn(i))
+    tasks.wait()
+
+
+@always_inline
+def parallelize[
+    origins: OriginSet,
+    //,
+    func: def(Int) capturing[origins] -> None,
+](num_work_items: Int, num_workers: Int):
+    def unified_func(i: Int):
+        func(i)
+
+    var chunk_size, extra_items = divmod(num_work_items, num_workers)
+
+    @always_inline
+    def worker(worker_index: Int) {imm chunk_size, imm extra_items}:
+        var start = worker_index * chunk_size + min(worker_index, extra_items)
+        for i in range(chunk_size + Int(worker_index < extra_items)):
+            unified_func(start + i)
+
+    sync_parallelize(worker, num_workers)
 
 
 @always_inline
@@ -64,7 +105,7 @@ def mix4[W: Int](
 
 @always_inline
 def message4[i0: Int, i1: Int, i2: Int, i3: Int](
-    block: InlineArray[UInt32, 16],
+    block: Array[UInt32, 16],
 ) -> SIMD[DType.uint32, simd_width_of[DType.float64]()] :
     comptime W = simd_width_of[DType.float64]()
     return SIMD[DType.uint32, W](
@@ -95,7 +136,7 @@ def round4[
     mut b: SIMD[DType.uint32, simd_width_of[DType.float64]()],
     mut c: SIMD[DType.uint32, simd_width_of[DType.float64]()],
     mut d: SIMD[DType.uint32, simd_width_of[DType.float64]()],
-    block: InlineArray[UInt32, 16],
+    block: Array[UInt32, 16],
 ):
     mix4(
         a,
@@ -122,12 +163,12 @@ def round4[
 
 
 def compress(
-    cv: InlineArray[UInt32, 8],
-    block: InlineArray[UInt32, 16],
+    cv: Array[UInt32, 8],
+    block: Array[UInt32, 16],
     counter: UInt64,
     block_len: Int,
     flags: UInt32,
-    mut result: InlineArray[UInt32, 16],
+    mut result: Array[UInt32, 16],
 ):
     comptime W = simd_width_of[DType.float64]()
     var cv_pointer = cv.unsafe_ptr()
@@ -176,7 +217,7 @@ def load_block(
     data: BPtr,
     offset: Int,
     size: Int,
-    mut block: InlineArray[UInt32, 16],
+    mut block: Array[UInt32, 16],
 ):
     comptime W = simd_width_of[DType.float64]()
     var block_pointer = block.unsafe_ptr()
@@ -210,8 +251,8 @@ def load_block(
 
 @always_inline
 def copy8(
-    source: InlineArray[UInt32, 8],
-    mut destination: InlineArray[UInt32, 8],
+    source: Array[UInt32, 8],
+    mut destination: Array[UInt32, 8],
 ):
     comptime W = simd_width_of[DType.float64]()
     var source_pointer = source.unsafe_ptr()
@@ -232,14 +273,14 @@ def chunk_output(
     offset: Int,
     size: Int,
     chunk_counter: UInt64,
-    key: InlineArray[UInt32, 8],
+    key: Array[UInt32, 8],
     flags: UInt32,
-    mut output_cv: InlineArray[UInt32, 8],
-    mut output_block: InlineArray[UInt32, 16],
+    mut output_cv: Array[UInt32, 8],
+    mut output_block: Array[UInt32, 16],
 ) -> Tuple[Int, UInt32]:
-    var cv = InlineArray[UInt32, 8](fill=0)
-    var block = InlineArray[UInt32, 16](fill=0)
-    var compressed = InlineArray[UInt32, 16](fill=0)
+    var cv = Array[UInt32, 8](fill=0)
+    var block = Array[UInt32, 16](fill=0)
+    var compressed = Array[UInt32, 16](fill=0)
     copy8(key, cv)
 
     var complete_before_last = 0
@@ -286,14 +327,14 @@ def chunk_output(
 
 
 def chaining_value(
-    input_cv: InlineArray[UInt32, 8],
-    block: InlineArray[UInt32, 16],
+    input_cv: Array[UInt32, 8],
+    block: Array[UInt32, 16],
     counter: UInt64,
     block_len: Int,
     flags: UInt32,
-    mut result_cv: InlineArray[UInt32, 8],
+    mut result_cv: Array[UInt32, 8],
 ):
-    var words = InlineArray[UInt32, 16](fill=0)
+    var words = Array[UInt32, 16](fill=0)
     compress(input_cv, block, counter, block_len, flags, words)
     comptime W = simd_width_of[DType.float64]()
     var words_pointer = words.unsafe_ptr()
@@ -308,13 +349,13 @@ def chaining_value(
 
 
 def parent_cv(
-    left: InlineArray[UInt32, 8],
-    right: InlineArray[UInt32, 8],
-    key: InlineArray[UInt32, 8],
+    left: Array[UInt32, 8],
+    right: Array[UInt32, 8],
+    key: Array[UInt32, 8],
     flags: UInt32,
-    mut result_cv: InlineArray[UInt32, 8],
+    mut result_cv: Array[UInt32, 8],
 ):
-    var block = InlineArray[UInt32, 16](fill=0)
+    var block = Array[UInt32, 16](fill=0)
     comptime W = simd_width_of[DType.float64]()
     var block_pointer = block.unsafe_ptr()
     var left_pointer = left.unsafe_ptr()
@@ -335,17 +376,17 @@ def parent_cv(
 
 def push_chunk_cv(
     chunk_index: Int,
-    key: InlineArray[UInt32, 8],
+    key: Array[UInt32, 8],
     flags: UInt32,
-    mut stack: InlineArray[UInt32, 432],
+    mut stack: Array[UInt32, 432],
     stack_count: Int,
-    mut current_cv: InlineArray[UInt32, 8],
+    mut current_cv: Array[UInt32, 8],
 ) -> Int:
     comptime W = simd_width_of[DType.float64]()
     var next_stack_count = stack_count
     var stack_pointer = stack.unsafe_ptr()
-    var merged_cv = InlineArray[UInt32, 8](fill=0)
-    var left_cv = InlineArray[UInt32, 8](fill=0)
+    var merged_cv = Array[UInt32, 8](fill=0)
+    var left_cv = Array[UInt32, 8](fill=0)
     var total_chunks = chunk_index + 1
     while total_chunks % 2 == 0:
         next_stack_count -= 1
@@ -383,7 +424,7 @@ def push_chunk_cv(
 def hash_impl(
     data: BPtr,
     size: Int,
-    key: InlineArray[UInt32, 8],
+    key: Array[UInt32, 8],
     flags: UInt32,
     seek: UInt64,
     destination: BPtr,
@@ -391,12 +432,12 @@ def hash_impl(
     max_workers: Int,
 ):
     comptime W = simd_width_of[DType.float64]()
-    var stack = InlineArray[UInt32, 432](fill=0)
+    var stack = Array[UInt32, 432](fill=0)
     var stack_pointer = stack.unsafe_ptr()
     var stack_count = 0
-    var input_cv = InlineArray[UInt32, 8](fill=0)
-    var block = InlineArray[UInt32, 16](fill=0)
-    var current_cv = InlineArray[UInt32, 8](fill=0)
+    var input_cv = Array[UInt32, 8](fill=0)
+    var block = Array[UInt32, 16](fill=0)
+    var current_cv = Array[UInt32, 8](fill=0)
 
     var chunk_count = 1
     if size > 0:
@@ -412,11 +453,11 @@ def hash_impl(
     ):
         var cvs = alloc[UInt32]((chunk_count - 1) * 8)
 
-        @parameter
+        @__parameter
         def hash_chunk(chunk_index: Int):
-            var local_input_cv = InlineArray[UInt32, 8](fill=0)
-            var local_block = InlineArray[UInt32, 16](fill=0)
-            var local_cv = InlineArray[UInt32, 8](fill=0)
+            var local_input_cv = Array[UInt32, 8](fill=0)
+            var local_block = Array[UInt32, 16](fill=0)
+            var local_cv = Array[UInt32, 8](fill=0)
             var metadata = chunk_output(
                 data,
                 chunk_index * 1024,
@@ -552,7 +593,7 @@ def hash_impl(
         root_block_len = 64
         root_flags = flags | PARENT
 
-    var output_words = InlineArray[UInt32, 16](fill=0)
+    var output_words = Array[UInt32, 16](fill=0)
     var output_block_counter = seek // 64
     var skip = Int(seek % 64)
     var written = 0
@@ -588,6 +629,7 @@ def mojo_blake3_hash(
     destination_size: Int,
     max_workers: Int,
 ) abi("C") -> Int:
+    initialize_runtime()
     if size < 0 or destination_size < 0:
         return -1
     if key_addr == 0:
@@ -600,7 +642,7 @@ def mojo_blake3_hash(
         return -3
     if max_workers != -1 and max_workers < 1:
         return -4
-    # UnsafePointer is non-nullable even when no bytes will be accessed.
+    # Pointer is non-nullable even when no bytes will be accessed.
     # Reuse the validated key pointer as a harmless sentinel for empty buffers.
     var safe_data_addr = data_addr
     var safe_destination_addr = destination_addr
@@ -611,7 +653,7 @@ def mojo_blake3_hash(
     var data = BPtr(unsafe_from_address=safe_data_addr)
     var key_bytes = BPtr(unsafe_from_address=key_addr)
     var destination = BPtr(unsafe_from_address=safe_destination_addr)
-    var key = InlineArray[UInt32, 8](fill=0)
+    var key = Array[UInt32, 8](fill=0)
     for i in range(8):
         var offset = i * 4
         key[i] = (
