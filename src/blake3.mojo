@@ -3,7 +3,6 @@
 from std.memory import alloc
 from std.memory import unsafe_memcpy
 from std.runtime import initialize_runtime
-from std.runtime.asyncrt import TaskGroup
 from std.sys.info import simd_width_of
 
 
@@ -14,44 +13,6 @@ comptime CHUNK_END: UInt32 = 2
 comptime PARENT: UInt32 = 4
 comptime ROOT: UInt32 = 8
 comptime PARALLEL_THRESHOLD = 4 * 1024 * 1024
-
-
-@always_inline
-def sync_parallelize[FuncType: def(Int) -> None](func: FuncType, count: Int):
-    @__parameter
-    @always_inline
-    def wrapped(i: Int):
-        func(i)
-
-    @always_inline
-    @__parameter
-    async def task_fn(i: Int):
-        wrapped(i)
-
-    var tasks = TaskGroup()
-    for i in range(count):
-        tasks.create_task(task_fn(i))
-    tasks.wait()
-
-
-@always_inline
-def parallelize[
-    origins: OriginSet,
-    //,
-    func: def(Int) capturing[origins] -> None,
-](num_work_items: Int, num_workers: Int):
-    def unified_func(i: Int):
-        func(i)
-
-    var chunk_size, extra_items = divmod(num_work_items, num_workers)
-
-    @always_inline
-    def worker(worker_index: Int) {imm chunk_size, imm extra_items}:
-        var start = worker_index * chunk_size + min(worker_index, extra_items)
-        for i in range(chunk_size + Int(worker_index < extra_items)):
-            unified_func(start + i)
-
-    sync_parallelize(worker, num_workers)
 
 
 @always_inline
@@ -738,7 +699,8 @@ def hash_impl(
 
         var full_chunk_count = chunk_count - 1
         var pair_count = full_chunk_count // 2
-        parallelize[hash_pair](pair_count, min(worker_count, pair_count))
+        for pair_index in range(pair_count):
+            hash_pair(pair_index)
         if full_chunk_count % 2 != 0:
             var final_full_chunk = full_chunk_count - 1
             var local_input_cv = Array[UInt32, 8](fill=0)
