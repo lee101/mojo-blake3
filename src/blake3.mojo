@@ -136,8 +136,8 @@ def compress(
 ):
     comptime W = simd_width_of[DType.float64]()
     var cv_pointer = cv.unsafe_ptr()
-    var a = cv_pointer.load[width=W](0)
-    var b = cv_pointer.load[width=W](W)
+    var a = cv_pointer.unsafe_load[width=W](0)
+    var b = cv_pointer.unsafe_load[width=W](W)
     var c = SIMD[DType.uint32, W](iv(0), iv(1), iv(2), iv(3))
     var d = SIMD[DType.uint32, W](
         UInt32(counter),
@@ -171,8 +171,8 @@ def compress(
     var result_pointer = result.unsafe_ptr()
     result_pointer.store(0, a ^ c)
     result_pointer.store(W, b ^ d)
-    result_pointer.store(2 * W, c ^ cv_pointer.load[width=W](0))
-    result_pointer.store(3 * W, d ^ cv_pointer.load[width=W](W))
+    result_pointer.store(2 * W, c ^ cv_pointer.unsafe_load[width=W](0))
+    result_pointer.store(3 * W, d ^ cv_pointer.unsafe_load[width=W](W))
 
 
 @always_inline
@@ -389,11 +389,11 @@ def load_block(
     var source = (data + offset).bitcast[UInt32]()
     i = 0
     while i + W <= full_words:
-        var values = source.load[width=W, alignment=1](i)
+        var values = source.unsafe_load[width=W, alignment=1](i)
         block_pointer.store(i, values)
         i += W
     while i < full_words:
-        block_pointer[i] = source.load[alignment=1](i)
+        block_pointer[i] = source.unsafe_load[alignment=1](i)
         i += 1
     var byte_index = full_words * 4
     while byte_index < size:
@@ -415,7 +415,7 @@ def copy8(
     var destination_pointer = destination.unsafe_ptr()
     var i = 0
     while i + W <= 8:
-        destination_pointer.store(i, source_pointer.load[width=W](i))
+        destination_pointer.store(i, source_pointer.unsafe_load[width=W](i))
         i += W
     while i < 8:
         destination_pointer[i] = source_pointer[i]
@@ -473,10 +473,10 @@ def chunk_cv_pair(
         var i = 0
         while i + W <= 8:
             first_cv.unsafe_ptr().store(
-                i, first_compressed.unsafe_ptr().load[width=W](i)
+                i, first_compressed.unsafe_ptr().unsafe_load[width=W](i)
             )
             second_cv.unsafe_ptr().store(
-                i, second_compressed.unsafe_ptr().load[width=W](i)
+                i, second_compressed.unsafe_ptr().unsafe_load[width=W](i)
             )
             i += W
         while i < 8:
@@ -524,7 +524,7 @@ def chunk_output(
         var compressed_pointer = compressed.unsafe_ptr()
         var i = 0
         while i + W <= 8:
-            cv_pointer.store(i, compressed_pointer.load[width=W](i))
+            cv_pointer.store(i, compressed_pointer.unsafe_load[width=W](i))
             i += W
         while i < 8:
             cv_pointer[i] = compressed_pointer[i]
@@ -559,7 +559,7 @@ def chaining_value(
     var result_pointer = result_cv.unsafe_ptr()
     var i = 0
     while i + W <= 8:
-        result_pointer.store(i, words_pointer.load[width=W](i))
+        result_pointer.store(i, words_pointer.unsafe_load[width=W](i))
         i += W
     while i < 8:
         result_pointer[i] = words_pointer[i]
@@ -580,8 +580,8 @@ def parent_cv(
     var right_pointer = right.unsafe_ptr()
     var i = 0
     while i + W <= 8:
-        block_pointer.store(i, left_pointer.load[width=W](i))
-        block_pointer.store(i + 8, right_pointer.load[width=W](i))
+        block_pointer.store(i, left_pointer.unsafe_load[width=W](i))
+        block_pointer.store(i + 8, right_pointer.unsafe_load[width=W](i))
         i += W
     while i < 8:
         block_pointer[i] = left_pointer[i]
@@ -612,7 +612,7 @@ def push_chunk_cv(
         while i + W <= 8:
             left_pointer.store(
                 i,
-                stack_pointer.load[width=W](stack_offset + i),
+                stack_pointer.unsafe_load[width=W](stack_offset + i),
             )
             i += W
         while i < 8:
@@ -628,7 +628,7 @@ def push_chunk_cv(
     while i + W <= 8:
         stack_pointer.store(
             stack_offset + i,
-            current_pointer.load[width=W](i),
+            current_pointer.unsafe_load[width=W](i),
         )
         i += W
     while i < 8:
@@ -685,11 +685,11 @@ def hash_impl(
             while i + W <= 8:
                 cvs.store(
                     destination_offset + i,
-                    first_pointer.load[width=W](i),
+                    first_pointer.unsafe_load[width=W](i),
                 )
                 cvs.store(
                     destination_offset + 8 + i,
-                    second_pointer.load[width=W](i),
+                    second_pointer.unsafe_load[width=W](i),
                 )
                 i += W
             while i < 8:
@@ -730,7 +730,7 @@ def hash_impl(
             while i + W <= 8:
                 cvs.store(
                     destination_offset + i,
-                    local_pointer.load[width=W](i),
+                    local_pointer.unsafe_load[width=W](i),
                 )
                 i += W
             while i < 8:
@@ -742,7 +742,7 @@ def hash_impl(
             var source_offset = chunk_index * 8
             var i = 0
             while i + W <= 8:
-                current_pointer.store(i, cvs.load[width=W](source_offset + i))
+                current_pointer.store(i, cvs.unsafe_load[width=W](source_offset + i))
                 i += W
             while i < 8:
                 current_pointer[i] = cvs[source_offset + i]
@@ -850,10 +850,10 @@ def hash_impl(
         while i + W <= 8:
             block_pointer.store(
                 i,
-                stack_pointer.load[width=W](stack_offset + i),
+                stack_pointer.unsafe_load[width=W](stack_offset + i),
             )
-            block_pointer.store(i + 8, current_pointer.load[width=W](i))
-            input_pointer.store(i, key_pointer.load[width=W](i))
+            block_pointer.store(i + 8, current_pointer.unsafe_load[width=W](i))
+            input_pointer.store(i, key_pointer.unsafe_load[width=W](i))
             i += W
         while i < 8:
             block_pointer[i] = stack_pointer[stack_offset + i]
